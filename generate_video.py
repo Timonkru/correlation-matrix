@@ -9,14 +9,16 @@ live correlation data using Manim (the 3Blue1Brown engine).
 Features:
   - 2D animated heatmap with diagonal cell fill
   - 3D correlation landscape (hills & valleys)
-  - Rolling correlation line chart
+  - Rolling correlation line chart (2D)
+  - 3D rolling correlation (lines in 3D space with camera rotation)
   - Branded intro/outro
 
 Usage:
-    python generate_video.py                          # Full video (2D + 3D + rolling)
+    python generate_video.py                          # Full video (all scenes)
     python generate_video.py --vertical               # 9:16 portrait (Instagram/TikTok)
     python generate_video.py --quality high            # 1080p 60fps
     python generate_video.py --scene 3d               # Only 3D landscape
+    python generate_video.py --scene rolling3d         # Only 3D rolling correlation
     python generate_video.py --scene 2d               # Only 2D heatmap
     python generate_video.py --scene full             # Everything (default)
     python generate_video.py --symbols ^GDAXI ^GSPC GC=F EURUSD=X
@@ -507,6 +509,195 @@ class RollingChartScene(Scene):
         self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.8)
 
 
+# ─── SCENE: 3D ROLLING CORRELATION ──────────────────────────
+
+class RollingChart3DScene(ThreeDScene):
+    """3D rolling correlation — lines floating in depth with camera rotation."""
+
+    def setup(self):
+        self.camera.background_color = "#0d1117"
+
+    def construct(self):
+        symbols = getattr(self, 'custom_symbols', list(DEFAULT_SYMBOLS.keys()))
+        corr, top_pairs, rolling_data, n_days = fetch_correlation_data(symbols)
+
+        if not rolling_data:
+            return
+
+        # ── Title (fixed in frame) ──
+        title = Text("3D Rolling Correlation (30-Day)", font_size=34, color=WHITE)
+        title.to_edge(UP, buff=0.4)
+        self.add_fixed_in_frame_mobjects(title)
+        self.play(Write(title), run_time=0.8)
+
+        # ── Camera setup ──
+        self.set_camera_orientation(phi=70 * DEGREES, theta=-55 * DEGREES, zoom=0.65)
+
+        n_pairs = len(rolling_data)
+
+        # ── 3D Axes ──
+        # X = time (normalized 0→1), Y = depth (one lane per pair), Z = correlation
+        axes = ThreeDAxes(
+            x_range=[0, 1, 0.25],
+            y_range=[0, max(n_pairs - 1, 1), 1],
+            z_range=[-1, 1, 0.5],
+            x_length=10,
+            y_length=max(n_pairs * 1.8, 3),
+            z_length=4,
+            axis_config={"color": GREY_B, "stroke_width": 1},
+        )
+
+        # Z-axis labels (correlation values)
+        z_labels = VGroup()
+        for z_val in [-1.0, -0.5, 0.0, 0.5, 1.0]:
+            label = Text(f"{z_val:.1f}", font_size=12, color=GREY_B)
+            label.rotate(90 * DEGREES, axis=RIGHT)
+            label.next_to(axes.c2p(0, 0, z_val), LEFT + OUT, buff=0.2)
+            z_labels.add(label)
+
+        # Reference lines at z=0, z=0.7, z=-0.7 (across all depth lanes)
+        ref_lines = VGroup()
+        for y_idx in range(n_pairs):
+            zero_plane = Line3D(
+                start=axes.c2p(0, y_idx, 0),
+                end=axes.c2p(1, y_idx, 0),
+                color=WHITE,
+                stroke_width=0.5,
+            ).set_opacity(0.2)
+            ref_lines.add(zero_plane)
+
+            pos_ref = Line3D(
+                start=axes.c2p(0, y_idx, 0.7),
+                end=axes.c2p(1, y_idx, 0.7),
+                color="#66bb6a",
+                stroke_width=0.5,
+            ).set_opacity(0.15)
+            ref_lines.add(pos_ref)
+
+            neg_ref = Line3D(
+                start=axes.c2p(0, y_idx, -0.7),
+                end=axes.c2p(1, y_idx, -0.7),
+                color="#ef5350",
+                stroke_width=0.5,
+            ).set_opacity(0.15)
+            ref_lines.add(neg_ref)
+
+        self.play(Create(axes), FadeIn(z_labels), run_time=1.0)
+        self.play(FadeIn(ref_lines), run_time=0.5)
+
+        # ── Build 3D lines for each pair ──
+        line_colors = ["#4fc3f7", "#ff9800", "#ab47bc", "#66bb6a", "#ef5350"]
+        all_lines = VGroup()
+        legend_items = VGroup()
+
+        for idx, (pair_name, series) in enumerate(rolling_data.items()):
+            color = line_colors[idx % len(line_colors)]
+            values = series.values
+            n_points = len(values)
+
+            if n_points < 2:
+                continue
+
+            # Create 3D line path
+            # X = normalized time, Y = pair index (depth lane), Z = correlation
+            points_3d = []
+            step = max(1, n_points // 200)  # Subsample for performance
+            for k in range(0, n_points, step):
+                t = k / (n_points - 1)
+                z_val = float(np.clip(values[k], -1, 1))
+                point = axes.c2p(t, idx, z_val)
+                points_3d.append(point)
+
+            # Ensure we include the last point
+            if (n_points - 1) % step != 0:
+                t = 1.0
+                z_val = float(np.clip(values[-1], -1, 1))
+                points_3d.append(axes.c2p(t, idx, z_val))
+
+            line = VMobject()
+            line.set_points_smoothly(points_3d)
+            line.set_stroke(color=color, width=2.5, opacity=0.9)
+            all_lines.add(line)
+
+            # Pair label at the start of each line (3D positioned)
+            pair_label = Text(pair_name, font_size=11, color=color)
+            pair_label.rotate(90 * DEGREES, axis=RIGHT)
+            pair_label.rotate(-45 * DEGREES, axis=OUT)
+            pair_label.next_to(axes.c2p(0, idx, 0), LEFT + OUT, buff=0.3)
+
+            # Legend for fixed-in-frame display
+            legend_dot = Dot(radius=0.06, color=color)
+            legend_text = Text(pair_name, font_size=12, color=color)
+            legend_text.next_to(legend_dot, RIGHT, buff=0.1)
+            legend_items.add(VGroup(legend_dot, legend_text))
+
+            # Animate each line drawing + label
+            self.play(
+                Create(line),
+                FadeIn(pair_label),
+                run_time=1.2
+            )
+
+        # ── Legend (fixed in frame) ──
+        legend_items.arrange(DOWN, aligned_edge=LEFT, buff=0.12)
+        legend_items.to_corner(UR, buff=0.5).shift(DOWN * 0.5)
+        self.add_fixed_in_frame_mobjects(legend_items)
+        self.play(FadeIn(legend_items), run_time=0.5)
+
+        # ── Rotate camera around the 3D lines ──
+        self.begin_ambient_camera_rotation(rate=0.12)
+        self.wait(4)
+        self.stop_ambient_camera_rotation()
+
+        # ── Side view — shows depth separation ──
+        self.move_camera(
+            phi=75 * DEGREES,
+            theta=10 * DEGREES,
+            zoom=0.7,
+            run_time=2.0,
+        )
+        self.wait(1.5)
+
+        # ── Top-down view — looks like traditional 2D chart ──
+        self.move_camera(
+            phi=5 * DEGREES,
+            theta=-90 * DEGREES,
+            zoom=0.8,
+            run_time=2.0,
+        )
+        self.wait(1.0)
+
+        # ── Final dramatic angle ──
+        self.move_camera(
+            phi=60 * DEGREES,
+            theta=-135 * DEGREES,
+            zoom=0.65,
+            run_time=2.0,
+        )
+        self.wait(1.0)
+
+        # ── Highlight strongest pair info ──
+        if top_pairs:
+            s1, s2, val = top_pairs[0]
+            info = Text(
+                f"Strongest: {s1} - {s2} ({val:.2f})",
+                font_size=22,
+                color="#66bb6a" if val > 0 else "#ef5350"
+            )
+            info.to_edge(DOWN, buff=0.5)
+            self.add_fixed_in_frame_mobjects(info)
+            self.play(FadeIn(info, shift=UP * 0.2), run_time=0.5)
+            self.wait(1.5)
+            self.play(FadeOut(info), run_time=0.4)
+
+        # ── Fade out ──
+        self.play(
+            *[FadeOut(mob) for mob in self.mobjects],
+            FadeOut(title), FadeOut(legend_items),
+            run_time=0.8
+        )
+
+
 # ─── SCENE: OUTRO ───────────────────────────────────────────
 
 class OutroScene(Scene):
@@ -566,7 +757,7 @@ def main():
                         choices=['low', 'medium', 'high'],
                         help='Video quality')
     parser.add_argument('--scene', default='full',
-                        choices=['full', '2d', '3d', 'rolling', 'outro'],
+                        choices=['full', '2d', '3d', 'rolling', 'rolling3d', 'outro'],
                         help='Which scene to render')
     parser.add_argument('--output', '-o', default=None,
                         help='Output filename')
@@ -580,12 +771,13 @@ def main():
     q_flag = quality_map[args.quality]
 
     scene_map = {
-        'full':    ['CorrelationMatrixScene', 'CorrelationLandscapeScene',
-                    'RollingChartScene', 'OutroScene'],
-        '2d':      ['CorrelationMatrixScene'],
-        '3d':      ['CorrelationLandscapeScene'],
-        'rolling': ['RollingChartScene'],
-        'outro':   ['OutroScene'],
+        'full':      ['CorrelationMatrixScene', 'CorrelationLandscapeScene',
+                      'RollingChartScene', 'RollingChart3DScene', 'OutroScene'],
+        '2d':        ['CorrelationMatrixScene'],
+        '3d':        ['CorrelationLandscapeScene'],
+        'rolling':   ['RollingChartScene'],
+        'rolling3d': ['RollingChart3DScene'],
+        'outro':     ['OutroScene'],
     }
     scenes = scene_map[args.scene]
 
