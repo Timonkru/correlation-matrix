@@ -6,10 +6,19 @@ KruegerAlgorithms | https://kruegeralgorithms.com
 Generates a cinematic Instagram Reel / YouTube Short from
 live correlation data using Manim (the 3Blue1Brown engine).
 
+Features:
+  - 2D animated heatmap with diagonal cell fill
+  - 3D correlation landscape (hills & valleys)
+  - Rolling correlation line chart
+  - Branded intro/outro
+
 Usage:
-    python generate_video.py                         # 16:9 landscape (YouTube)
-    python generate_video.py --vertical              # 9:16 portrait  (Instagram/TikTok)
-    python generate_video.py --quality high           # 1080p 60fps
+    python generate_video.py                          # Full video (2D + 3D + rolling)
+    python generate_video.py --vertical               # 9:16 portrait (Instagram/TikTok)
+    python generate_video.py --quality high            # 1080p 60fps
+    python generate_video.py --scene 3d               # Only 3D landscape
+    python generate_video.py --scene 2d               # Only 2D heatmap
+    python generate_video.py --scene full             # Everything (default)
     python generate_video.py --symbols ^GDAXI ^GSPC GC=F EURUSD=X
 """
 
@@ -97,21 +106,195 @@ def corr_to_color(val):
         return rgb_to_color([r, g, b])
 
 
+def corr_to_rgb(val):
+    """Return [r, g, b] for a correlation value."""
+    if val >= 0:
+        return [1.0 - val * 0.7, 1.0 - val * 0.2, 1.0 - val * 0.7]
+    else:
+        return [1.0 + val * 0.2, 1.0 + val * 0.7, 1.0 + val * 0.7]
+
+
 def corr_text_color(val):
     """White text on strong colors, black on light backgrounds."""
     return WHITE if abs(val) > 0.5 else BLACK
 
 
-# ─── SCENE: CORRELATION MATRIX ───────────────────────────────
+# ─── SCENE: 3D CORRELATION LANDSCAPE ─────────────────────────
 
-class CorrelationMatrixScene(Scene):
-    """Main animated scene for the correlation matrix video."""
+class CorrelationLandscapeScene(ThreeDScene):
+    """3D surface visualization — hills for positive, valleys for negative."""
 
     def setup(self):
         self.camera.background_color = "#0d1117"
 
     def construct(self):
-        # ── Fetch live data ──
+        symbols = getattr(self, 'custom_symbols', list(DEFAULT_SYMBOLS.keys()))
+        corr, top_pairs, _, n_days = fetch_correlation_data(symbols)
+        labels = list(corr.columns)
+        n = len(labels)
+        corr_values = corr.values
+
+        # ── Title (fixed in frame, doesn't rotate) ──
+        title = Text("3D Correlation Landscape", font_size=36, color=WHITE)
+        title.to_edge(UP, buff=0.4)
+        self.add_fixed_in_frame_mobjects(title)
+        self.play(Write(title), run_time=0.8)
+
+        # ── Set up 3D camera ──
+        self.set_camera_orientation(phi=65 * DEGREES, theta=-45 * DEGREES, zoom=0.7)
+
+        # ── Create 3D axes ──
+        axes = ThreeDAxes(
+            x_range=[0, n - 1, 1],
+            y_range=[0, n - 1, 1],
+            z_range=[-1, 1, 0.5],
+            x_length=6,
+            y_length=6,
+            z_length=4,
+            axis_config={"color": GREY_B, "stroke_width": 1},
+        )
+
+        # Z-axis labels
+        z_labels = VGroup()
+        for z_val in [-1.0, -0.5, 0.0, 0.5, 1.0]:
+            label = Text(f"{z_val:.1f}", font_size=12, color=GREY_B)
+            label.rotate(90 * DEGREES, axis=RIGHT)
+            label.next_to(axes.c2p(0, 0, z_val), LEFT + OUT, buff=0.2)
+            z_labels.add(label)
+
+        # Asset labels along X and Y axes
+        x_labels = VGroup()
+        for i, name in enumerate(labels):
+            label = Text(name, font_size=max(8, int(48 / n)), color=WHITE)
+            label.rotate(90 * DEGREES, axis=RIGHT)
+            label.rotate(-45 * DEGREES, axis=OUT)
+            label.next_to(axes.c2p(i, -0.5, 0), DOWN + LEFT, buff=0.1)
+            x_labels.add(label)
+
+        y_labels_3d = VGroup()
+        for j, name in enumerate(labels):
+            label = Text(name, font_size=max(8, int(48 / n)), color=WHITE)
+            label.rotate(90 * DEGREES, axis=RIGHT)
+            label.rotate(45 * DEGREES, axis=OUT)
+            label.next_to(axes.c2p(-0.5, j, 0), LEFT + DOWN, buff=0.1)
+            y_labels_3d.add(label)
+
+        self.play(Create(axes), run_time=1.0)
+        self.play(FadeIn(x_labels), FadeIn(y_labels_3d), FadeIn(z_labels), run_time=0.8)
+
+        # ── Build 3D bars (one per cell) ──
+        bars = VGroup()
+        for i in range(n):
+            for j in range(n):
+                val = corr_values[i, j]
+                height = abs(val) * 2  # Scale: 1.0 corr = 2 units tall
+                if height < 0.05:
+                    height = 0.05
+
+                bar = Prism(
+                    dimensions=[0.7, 0.7, height],
+                )
+
+                # Position: center of cell, z at half-height
+                z_pos = val * 2 / 2  # Positive goes up, negative goes down
+                bar.move_to(axes.c2p(i, j, 0))
+                bar.shift(OUT * z_pos)
+
+                # Color based on correlation
+                rgb = corr_to_rgb(val)
+                bar.set_color(rgb_to_color(rgb))
+                bar.set_opacity(0.85)
+
+                bars.add(bar)
+
+        # ── Animate bars growing from the base plane ──
+        # Start flat, then grow to full height
+        flat_bars = VGroup()
+        for i in range(n):
+            for j in range(n):
+                flat = Prism(dimensions=[0.7, 0.7, 0.01])
+                flat.move_to(axes.c2p(i, j, 0))
+                val = corr_values[i, j]
+                rgb = corr_to_rgb(val)
+                flat.set_color(rgb_to_color(rgb))
+                flat.set_opacity(0.85)
+                flat_bars.add(flat)
+
+        self.play(
+            LaggedStart(*[FadeIn(b) for b in flat_bars], lag_ratio=0.02),
+            run_time=1.0
+        )
+
+        # Transform flat bars to full-height bars
+        self.play(
+            *[Transform(flat_bars[k], bars[k]) for k in range(len(bars))],
+            run_time=2.5,
+            rate_func=smooth,
+        )
+        self.wait(0.5)
+
+        # ── Rotate camera around the landscape ──
+        self.begin_ambient_camera_rotation(rate=0.15)
+        self.wait(4)
+        self.stop_ambient_camera_rotation()
+
+        # ── Zoom into a peak (strongest positive correlation) ──
+        if top_pairs:
+            s1, s2, val = top_pairs[0]
+            i = labels.index(s1)
+            j = labels.index(s2)
+
+            # Info text (fixed in frame)
+            info = Text(
+                f"Peak: {s1} - {s2} ({val:.2f})",
+                font_size=22,
+                color="#66bb6a" if val > 0 else "#ef5350"
+            )
+            info.to_edge(DOWN, buff=0.5)
+            self.add_fixed_in_frame_mobjects(info)
+            self.play(
+                FadeIn(info, shift=UP * 0.2),
+                run_time=0.5
+            )
+
+            # Camera move toward the peak
+            self.move_camera(
+                phi=45 * DEGREES,
+                theta=-30 * DEGREES,
+                zoom=1.0,
+                run_time=2.0,
+            )
+            self.wait(1.5)
+
+            self.play(FadeOut(info), run_time=0.4)
+
+        # ── Final panoramic sweep ──
+        self.move_camera(
+            phi=55 * DEGREES,
+            theta=-135 * DEGREES,
+            zoom=0.65,
+            run_time=2.5,
+        )
+        self.wait(1.0)
+
+        # ── Fade out ──
+        self.play(
+            FadeOut(flat_bars), FadeOut(axes),
+            FadeOut(x_labels), FadeOut(y_labels_3d), FadeOut(z_labels),
+            FadeOut(title),
+            run_time=0.8
+        )
+
+
+# ─── SCENE: 2D HEATMAP ──────────────────────────────────────
+
+class CorrelationMatrixScene(Scene):
+    """2D animated heatmap scene."""
+
+    def setup(self):
+        self.camera.background_color = "#0d1117"
+
+    def construct(self):
         symbols = getattr(self, 'custom_symbols', list(DEFAULT_SYMBOLS.keys()))
         corr, top_pairs, rolling_data, n_days = fetch_correlation_data(symbols)
         labels = list(corr.columns)
@@ -141,7 +324,6 @@ class CorrelationMatrixScene(Scene):
         grid_start_x = -grid_width / 2 + cell_size / 2
         grid_start_y = grid_width / 2 - cell_size / 2
 
-        # Column labels (top)
         col_labels = VGroup()
         for j, name in enumerate(labels):
             x = grid_start_x + j * cell_size
@@ -151,7 +333,6 @@ class CorrelationMatrixScene(Scene):
             t.move_to([x, y, 0])
             col_labels.add(t)
 
-        # Row labels (left)
         row_labels = VGroup()
         for i, name in enumerate(labels):
             x = grid_start_x - cell_size * 0.9
@@ -160,7 +341,6 @@ class CorrelationMatrixScene(Scene):
             t.move_to([x, y, 0])
             row_labels.add(t)
 
-        # Animate labels appearing
         self.play(
             LaggedStart(*[FadeIn(l, shift=DOWN * 0.2) for l in col_labels], lag_ratio=0.08),
             LaggedStart(*[FadeIn(l, shift=RIGHT * 0.2) for l in row_labels], lag_ratio=0.08),
@@ -168,7 +348,7 @@ class CorrelationMatrixScene(Scene):
         )
 
         # ══════════════════════════════════════════════════════
-        # ACT 3: CELLS FILL IN WITH ANIMATED COUNTING
+        # ACT 3: CELLS FILL IN DIAGONALLY
         # ══════════════════════════════════════════════════════
 
         cells = VGroup()
@@ -181,7 +361,6 @@ class CorrelationMatrixScene(Scene):
                 x = grid_start_x + j * cell_size
                 y = grid_start_y - i * cell_size
 
-                # Background rectangle
                 rect = Square(side_length=cell_size * 0.92)
                 rect.move_to([x, y, 0])
                 rect.set_fill(corr_to_color(val), opacity=0.9)
@@ -189,20 +368,17 @@ class CorrelationMatrixScene(Scene):
                 cells.add(rect)
                 cell_rects[(i, j)] = rect
 
-                # Value text
                 txt = Text(f"{val:.2f}", font_size=max(8, int(50 / n)),
                            color=corr_text_color(val), weight=BOLD)
                 txt.move_to([x, y, 0])
                 value_texts.add(txt)
 
-        # Animate cells appearing diagonally
         diagonal_order = []
         for d in range(2 * n - 1):
             for i in range(n):
                 j = d - i
                 if 0 <= j < n:
-                    idx = i * n + j
-                    diagonal_order.append(idx)
+                    diagonal_order.append(i * n + j)
 
         ordered_cells = [cells[i] for i in diagonal_order]
         ordered_texts = [value_texts[i] for i in diagonal_order]
@@ -228,14 +404,11 @@ class CorrelationMatrixScene(Scene):
             rect1 = cell_rects[(i, j)]
             rect2 = cell_rects[(j, i)]
 
-            # Pulsing highlight
             highlight_color = "#66bb6a" if val > 0 else "#ef5350"
             glow1 = rect1.copy().set_stroke(color=highlight_color, width=4)
             glow2 = rect2.copy().set_stroke(color=highlight_color, width=4)
 
-            # Info text
             direction = "positiv" if val > 0 else "negativ"
-            emoji = "+" if val > 0 else "-"
             info = Text(
                 f"{s1} <> {s2}: {val:.2f} ({direction})",
                 font_size=20, color=highlight_color
@@ -248,28 +421,31 @@ class CorrelationMatrixScene(Scene):
                 run_time=0.6
             )
             self.wait(1.0)
-
-            if pair_idx < len(top_pairs) - 1:
-                self.play(FadeOut(glow1), FadeOut(glow2), FadeOut(info), run_time=0.4)
-            else:
-                self.play(FadeOut(glow1), FadeOut(glow2), FadeOut(info), run_time=0.4)
+            self.play(FadeOut(glow1), FadeOut(glow2), FadeOut(info), run_time=0.4)
 
         self.wait(0.3)
 
-        # ══════════════════════════════════════════════════════
-        # ACT 5: TRANSITION TO ROLLING CHART
-        # ══════════════════════════════════════════════════════
-
-        # Fade out matrix
+        # Fade out 2D matrix
         all_matrix = VGroup(cells, value_texts, col_labels, row_labels)
         self.play(FadeOut(all_matrix), run_time=0.8)
 
-        # Rolling correlation chart title
+
+# ─── SCENE: ROLLING CHART ───────────────────────────────────
+
+class RollingChartScene(Scene):
+    """Animated rolling correlation line chart."""
+
+    def setup(self):
+        self.camera.background_color = "#0d1117"
+
+    def construct(self):
+        symbols = getattr(self, 'custom_symbols', list(DEFAULT_SYMBOLS.keys()))
+        corr, top_pairs, rolling_data, n_days = fetch_correlation_data(symbols)
+
         chart_title = Text("Rolling Correlation (30-Day)", font_size=32, color=WHITE)
         chart_title.to_edge(UP, buff=0.5)
         self.play(Write(chart_title), run_time=0.6)
 
-        # Draw axes
         axes = Axes(
             x_range=[0, 1, 0.25],
             y_range=[-1, 1, 0.5],
@@ -280,31 +456,22 @@ class CorrelationMatrixScene(Scene):
         )
         axes.shift(DOWN * 0.3)
 
-        # Y-axis labels
         y_labels = VGroup()
         for val in [-1.0, -0.5, 0, 0.5, 1.0]:
             label = Text(f"{val:.1f}", font_size=14, color=GREY_B)
             label.next_to(axes.c2p(0, val), LEFT, buff=0.15)
             y_labels.add(label)
 
-        # Reference lines
-        zero_line = DashedLine(
-            axes.c2p(0, 0), axes.c2p(1, 0),
-            color=WHITE, stroke_width=0.5, stroke_opacity=0.3
-        )
-        pos_line = DashedLine(
-            axes.c2p(0, 0.7), axes.c2p(1, 0.7),
-            color="#66bb6a", stroke_width=0.5, stroke_opacity=0.3
-        )
-        neg_line = DashedLine(
-            axes.c2p(0, -0.7), axes.c2p(1, -0.7),
-            color="#ef5350", stroke_width=0.5, stroke_opacity=0.3
-        )
+        zero_line = DashedLine(axes.c2p(0, 0), axes.c2p(1, 0),
+                               color=WHITE, stroke_width=0.5, stroke_opacity=0.3)
+        pos_line = DashedLine(axes.c2p(0, 0.7), axes.c2p(1, 0.7),
+                               color="#66bb6a", stroke_width=0.5, stroke_opacity=0.3)
+        neg_line = DashedLine(axes.c2p(0, -0.7), axes.c2p(1, -0.7),
+                               color="#ef5350", stroke_width=0.5, stroke_opacity=0.3)
 
         self.play(Create(axes), FadeIn(y_labels), run_time=0.8)
         self.play(Create(zero_line), Create(pos_line), Create(neg_line), run_time=0.4)
 
-        # Plot rolling correlation lines
         line_colors = ["#4fc3f7", "#ff9800", "#ab47bc", "#66bb6a", "#ef5350"]
         legend_items = VGroup()
 
@@ -325,34 +492,34 @@ class CorrelationMatrixScene(Scene):
             line.set_points_smoothly(points)
             line.set_stroke(color=color, width=2, opacity=0.9)
 
-            # Legend entry
             legend_dot = Dot(radius=0.06, color=color)
             legend_text = Text(pair_name, font_size=12, color=color)
             legend_text.next_to(legend_dot, RIGHT, buff=0.1)
-            legend_entry = VGroup(legend_dot, legend_text)
-            legend_items.add(legend_entry)
+            legend_items.add(VGroup(legend_dot, legend_text))
 
-            # Animate the line drawing
             self.play(Create(line), run_time=1.2)
 
-        # Position legend
         legend_items.arrange(DOWN, aligned_edge=LEFT, buff=0.12)
-        legend_items.to_corner(UR, buff=0.5)
-        legend_items.shift(DOWN * 0.5)
+        legend_items.to_corner(UR, buff=0.5).shift(DOWN * 0.5)
         self.play(FadeIn(legend_items), run_time=0.5)
         self.wait(1.5)
 
-        # ══════════════════════════════════════════════════════
-        # ACT 6: OUTRO
-        # ══════════════════════════════════════════════════════
+        self.play(*[FadeOut(mob) for mob in self.mobjects], run_time=0.8)
 
-        # Fade everything
-        self.play(
-            *[FadeOut(mob) for mob in self.mobjects],
-            run_time=0.8
-        )
 
-        # Stats summary
+# ─── SCENE: OUTRO ───────────────────────────────────────────
+
+class OutroScene(Scene):
+    """Summary stats and branded outro."""
+
+    def setup(self):
+        self.camera.background_color = "#0d1117"
+
+    def construct(self):
+        symbols = getattr(self, 'custom_symbols', list(DEFAULT_SYMBOLS.keys()))
+        corr, top_pairs, _, n_days = fetch_correlation_data(symbols)
+        labels = list(corr.columns)
+
         stats_title = Text("Summary", font_size=36, color=WHITE)
         stats = VGroup()
         stats.add(Text(f"{len(labels)} Assets Analyzed", font_size=22, color=GREY_B))
@@ -371,8 +538,6 @@ class CorrelationMatrixScene(Scene):
         self.play(Write(stats_title), run_time=0.5)
         self.play(LaggedStart(*[FadeIn(s, shift=UP * 0.2) for s in stats], lag_ratio=0.15), run_time=1.0)
         self.wait(1.0)
-
-        # Brand outro
         self.play(FadeOut(stats_title), FadeOut(stats), run_time=0.5)
 
         logo = Text("KruegerAlgorithms", font_size=44, color=WHITE, weight=BOLD)
@@ -400,43 +565,51 @@ def main():
     parser.add_argument('--quality', '-q', default='medium',
                         choices=['low', 'medium', 'high'],
                         help='Video quality')
+    parser.add_argument('--scene', default='full',
+                        choices=['full', '2d', '3d', 'rolling', 'outro'],
+                        help='Which scene to render')
     parser.add_argument('--output', '-o', default=None,
                         help='Output filename')
     args = parser.parse_args()
 
-    # Quality presets
     quality_map = {
-        'low':    'l',    # 480p 15fps
-        'medium': 'm',    # 720p 30fps
-        'high':   'h',    # 1080p 60fps
+        'low':    'l',
+        'medium': 'm',
+        'high':   'h',
     }
     q_flag = quality_map[args.quality]
 
-    # Build manim command
-    cmd_parts = [
-        sys.executable, '-m', 'manim', 'render',
-        f'-q{q_flag}',
-        '--disable_caching',
-    ]
+    scene_map = {
+        'full':    ['CorrelationMatrixScene', 'CorrelationLandscapeScene',
+                    'RollingChartScene', 'OutroScene'],
+        '2d':      ['CorrelationMatrixScene'],
+        '3d':      ['CorrelationLandscapeScene'],
+        'rolling': ['RollingChartScene'],
+        'outro':   ['OutroScene'],
+    }
+    scenes = scene_map[args.scene]
 
-    if args.vertical:
-        # 9:16 portrait for Instagram Reels
-        cmd_parts.extend([
-            '--resolution', '1080,1920',
-        ])
-
-    script_path = os.path.abspath(__file__)
-    cmd_parts.extend([script_path, 'CorrelationMatrixScene'])
-
-    # Pass symbols via environment variable
     os.environ['CORR_SYMBOLS'] = ','.join(args.symbols)
+    script_path = os.path.abspath(__file__)
 
-    cmd = ' '.join(f'"{p}"' if ' ' in p else p for p in cmd_parts)
-    print(f"Rendering video ({args.quality} quality)...")
-    print(f"Command: {cmd}")
-    os.system(cmd)
+    for scene_name in scenes:
+        cmd_parts = [
+            sys.executable, '-m', 'manim', 'render',
+            f'-q{q_flag}',
+            '--disable_caching',
+        ]
+        if args.vertical:
+            cmd_parts.extend(['--resolution', '1080,1920'])
 
-    print("\nDone! Check the media/ folder for the output video.")
+        cmd_parts.extend([script_path, scene_name])
+
+        cmd = ' '.join(f'"{p}"' if ' ' in p else p for p in cmd_parts)
+        print(f"\nRendering {scene_name} ({args.quality} quality)...")
+        os.system(cmd)
+
+    print("\nDone! Check the media/ folder for the output videos.")
+    print("\nTo combine into one video, use:")
+    print('  ffmpeg -f concat -i filelist.txt -c copy final_video.mp4')
 
 
 if __name__ == '__main__':
