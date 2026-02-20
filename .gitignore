@@ -1,0 +1,13 @@
+# Generated outputs
+media/
+*.png
+!README.md
+
+# Python
+__pycache__/
+*.pyc
+.env
+
+# IDE
+.vscode/
+.idea/
