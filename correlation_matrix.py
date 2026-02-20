@@ -69,7 +69,10 @@ def fetch_data(symbols: list, period: str = '1y') -> pd.DataFrame:
             hist = ticker.history(period=period)
             if len(hist) > 0:
                 label = DEFAULT_SYMBOLS.get(sym, sym)
-                data[label] = hist['Close']
+                # Strip timezone so all symbols align on date only
+                close = hist['Close']
+                close.index = close.index.tz_localize(None).normalize()
+                data[label] = close
                 print(f"  {label} ({sym}): {len(hist)} days")
             else:
                 print(f"  {sym}: No data found, skipping")
@@ -110,6 +113,8 @@ def plot_heatmap(corr_matrix: pd.DataFrame, output_path: str):
 
     n = len(corr_matrix)
     fig, ax = plt.subplots(figsize=(max(8, n * 1.2), max(6, n * 1.0)))
+    fig.set_facecolor('#1a1a2e')
+    ax.set_facecolor('none')  # Transparent so imshow colors show through
 
     # Custom colormap: red (negative) -> white (neutral) -> green (positive)
     colors = ['#d32f2f', '#ef5350', '#ffffff', '#66bb6a', '#2e7d32']
@@ -120,8 +125,9 @@ def plot_heatmap(corr_matrix: pd.DataFrame, output_path: str):
     # Labels
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
-    ax.set_xticklabels(corr_matrix.columns, rotation=45, ha='right', fontsize=10)
-    ax.set_yticklabels(corr_matrix.index, fontsize=10)
+    ax.set_xticklabels(corr_matrix.columns, rotation=45, ha='right', fontsize=10, color='white')
+    ax.set_yticklabels(corr_matrix.index, fontsize=10, color='white')
+    ax.tick_params(axis='both', colors='white')
 
     # Add correlation values as text
     for i in range(n):
@@ -131,8 +137,13 @@ def plot_heatmap(corr_matrix: pd.DataFrame, output_path: str):
             ax.text(j, i, f'{val:.2f}', ha='center', va='center',
                     fontsize=9, fontweight='bold', color=text_color)
 
-    plt.colorbar(im, ax=ax, shrink=0.8, label='Correlation')
-    ax.set_title('Asset Correlation Matrix (Daily Returns)', fontsize=14, fontweight='light', pad=15)
+    cbar = plt.colorbar(im, ax=ax, shrink=0.8, label='Correlation')
+    cbar.ax.yaxis.set_tick_params(color='white')
+    cbar.ax.yaxis.label.set_color('white')
+    plt.setp(cbar.ax.yaxis.get_ticklabels(), color='white')
+
+    ax.set_title('Asset Correlation Matrix (Daily Returns)',
+                 fontsize=14, fontweight='light', pad=15, color='white')
 
     fig.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='#1a1a2e')
     plt.close()
@@ -145,6 +156,7 @@ def plot_rolling(prices: pd.DataFrame, pairs: list, window: int, output_path: st
         return
 
     fig, ax = plt.subplots(figsize=(12, 5))
+    fig.set_facecolor('#1a1a2e')
 
     symbols = list(prices.columns)
     plotted = 0
@@ -164,11 +176,13 @@ def plot_rolling(prices: pd.DataFrame, pairs: list, window: int, output_path: st
     ax.axhline(y=0.7, color='green', linewidth=0.5, alpha=0.3, linestyle='--')
     ax.axhline(y=-0.7, color='red', linewidth=0.5, alpha=0.3, linestyle='--')
 
-    ax.set_title(f'Rolling Correlation ({window}-day window)', fontsize=14, fontweight='light')
-    ax.set_ylabel('Correlation')
+    ax.set_title(f'Rolling Correlation ({window}-day window)',
+                 fontsize=14, fontweight='light', color='white')
+    ax.set_ylabel('Correlation', color='white')
     ax.set_ylim(-1.1, 1.1)
     ax.legend(loc='upper left', fontsize=8)
     ax.grid(alpha=0.2)
+    fig.autofmt_xdate()  # Format x-axis as dates
 
     rolling_path = output_path.replace('.png', '_rolling.png')
     fig.savefig(rolling_path, dpi=150, bbox_inches='tight', facecolor='#1a1a2e')
